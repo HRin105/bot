@@ -1,0 +1,46 @@
+{
+    "TELE_REGION": [
+        28,
+        989,
+        197,
+        82
+    ],
+    "BTN_LON_POS": [
+        620,
+        835
+    ],
+    "BTN_NHO_POS": [
+        815,
+        834
+    ],
+    "BET_BOX_POS": [
+        749,
+        958
+    ],
+    "BTN_GUI_POS": [
+        731,
+        1089
+    ],
+    "TELE_CLICK_POS": [
+        427,
+        1029
+    ],
+    "TELE_CLOSE_POS": [
+        1129,
+        601
+    ],
+    "DELAY_AFTER_BET": 28,
+    "DELAY_AFTER_WIN_WAIT": 24,
+    "DRY_RUN": false,
+    "ENABLE_SOUND": false,
+    "TESS_CMD": "C:\\\\Program Files\\\\Tesseract-OCR\\\\tesseract.exe",
+    "BET_LEVELS": [
+        1000,
+        2000,
+        4000,
+        8000,
+        17000,
+        34000,
+        68000
+    ]
+}
