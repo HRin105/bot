@@ -17,6 +17,7 @@ import argparse
 import customtkinter as ctk
 from tkinter import messagebox, filedialog
 import atexit
+from telegram_notifier import telegram_notifier
 
 # ============================
 #  Auto Bot Winluck v4_pro
@@ -106,8 +107,6 @@ BET_LEVELS = [1000, 2000, 4000, 8000, 17000, 34000, 68000]
 bet_index = 0
 bot_running = False
 bot_paused = False
-DRY_RUN = False
-ENABLE_SOUND = False
 
 # Lợi nhuận dựa trên số tiền đầu tiên
 initial_amount = None     # lưu số tiền hiện tại đầu tiên
@@ -120,18 +119,8 @@ history = []
 HISTORY_MAX = 60
 
 def play_sound(win=True):
-    if not ENABLE_SOUND:
-        return
-    try:
-        if os.name == 'nt':
-            import winsound
-            freq = 1200 if win else 500
-            dur = 120 if win else 200
-            winsound.Beep(freq, dur)
-        else:
-            pass
-    except Exception as e:
-        logging.warning(f"Âm thanh lỗi: {e}")
+    # Hàm âm thanh đã bị loại bỏ theo yêu cầu
+    pass
 
 def get_text_from_region(region):
     try:
@@ -211,9 +200,6 @@ def get_amount_from_region(region):
         return ""
 
 def click_at(pos, desc="vị trí"):
-    if DRY_RUN:
-        logging.info(f"[DRY_RUN] Click giả lập {desc} tại {pos}")
-        return
     try:
         with click_lock:
             pyautogui.moveTo(pos[0], pos[1], duration=0.15)
@@ -325,12 +311,6 @@ def input_bet_and_send(amount, log_box=None):
     ghi thông tin vào nhật ký (file + GUI log_box nếu có).
     Tính Lợi Nhuận theo phương án 1: chênh lệch số dư (current - prev), cộng dồn.
     """
-    if DRY_RUN:
-        msg = f"[DRY_RUN] Nhập hệ số {amount} và gửi"
-        logging.info(msg)
-        if log_box is not None:
-            log_box.insert("end", msg + "\n"); log_box.see("end")
-        return
     try:
         click_at(BET_BOX_POS, "ô BET")
         pyautogui.hotkey('ctrl', 'a')
@@ -366,14 +346,12 @@ def perform_click(prediction, amount, log_box=None):
             last_bet_amount = amount
         if prediction == "LON":
             click_at(BTN_LON_POS, "nút LỚN (lần 1)")
-            if not DRY_RUN:
-                pyautogui.hotkey('ctrl', 'r')
+            pyautogui.hotkey('ctrl', 'r')
             time.sleep(2)
             click_at(BTN_LON_POS, "nút LỚN (lần 2)")
         elif prediction == "NHO":
             click_at(BTN_NHO_POS, "nút NHỎ (lần 1)")
-            if not DRY_RUN:
-                pyautogui.hotkey('ctrl', 'r')
+            pyautogui.hotkey('ctrl', 'r')
             time.sleep(2)
             click_at(BTN_NHO_POS, "nút NHỎ (lần 2)")
         # truyền log_box xuống để input_bet_and_send có thể cập nhật nhật ký GUI
@@ -478,13 +456,24 @@ def bot_loop(status_var, bet_var, log_box, spark_canvas, profit_var, stats_var):
             if "THẮNG" in text:
                 play_sound(win=True)
                 if waiting_for_win:
+                    old_bet = BET_LEVELS[bet_index]
                     if bet_index < len(BET_LEVELS) - 1:
                         bet_index += 1
                         log_msg(f"🟢 KQ: THẮNG (chờ) → tăng hệ số lên: {BET_LEVELS[bet_index]}")
+                        # Gửi thông báo Telegram về thay đổi hệ số
+                        try:
+                            telegram_notifier.send_bet_change(old_bet, BET_LEVELS[bet_index], "Thắng - tăng hệ số")
+                        except Exception as e:
+                            logging.warning(f"Không thể gửi thông báo Telegram thay đổi hệ số: {e}")
                     else:
                         # Đang ở hệ số cuối và thắng → reset về đầu
                         bet_index = 0
                         log_msg(f"🟢 KQ: THẮNG (chờ) ở hệ số cuối → RESET về hệ số đầu: {BET_LEVELS[bet_index]}")
+                        # Gửi thông báo Telegram về reset hệ số
+                        try:
+                            telegram_notifier.send_bet_change(old_bet, BET_LEVELS[bet_index], "Thắng ở hệ số cuối - reset về đầu")
+                        except Exception as e:
+                            logging.warning(f"Không thể gửi thông báo Telegram reset hệ số: {e}")
                     push_history(1, spark_canvas, stats_var)
                     waiting_for_win = False
                     last_prediction = None
@@ -496,9 +485,14 @@ def bot_loop(status_var, bet_var, log_box, spark_canvas, profit_var, stats_var):
                     log_msg("🟢 KQ: THẮNG → reset hệ số về 1000")
                     # Đợi giao diện cập nhật rồi quét số dư, cập nhật profit theo chênh lệch
                     time.sleep(0.2)
-                    _, profit_val = _scan_balance_and_log(log_box=log_box)
+                    balance, profit_val = _scan_balance_and_log(log_box=log_box)
                     if profit_val is not None:
                         profit_var.set(f"💰 Lợi nhuận: {profit_val:+,d} VND")
+                        # Gửi thông báo Telegram về kết quả thắng
+                        try:
+                            telegram_notifier.send_game_result("WIN", BET_LEVELS[bet_index], balance, profit_val)
+                        except Exception as e:
+                            logging.warning(f"Không thể gửi thông báo Telegram kết quả thắng: {e}")
                     push_history(1, spark_canvas, stats_var)
                     bet_index = 0
                     last_prediction = None
@@ -510,9 +504,14 @@ def bot_loop(status_var, bet_var, log_box, spark_canvas, profit_var, stats_var):
                 push_history(0, spark_canvas, stats_var)
                 # Đợi giao diện cập nhật rồi quét số dư, cập nhật profit
                 time.sleep(0.2)
-                _, profit_val = _scan_balance_and_log(log_box=log_box)
+                balance, profit_val = _scan_balance_and_log(log_box=log_box)
                 if profit_val is not None:
                     profit_var.set(f"💰 Lợi nhuận: {profit_val:+,d} VND")
+                    # Gửi thông báo Telegram về kết quả thua
+                    try:
+                        telegram_notifier.send_game_result("LOSE", BET_LEVELS[bet_index], balance, profit_val)
+                    except Exception as e:
+                        logging.warning(f"Không thể gửi thông báo Telegram kết quả thua: {e}")
                 
                 # Logic mới: Kiểm tra nếu đã ở hệ số cuối cùng
                 if bet_index >= len(BET_LEVELS) - 1:
@@ -557,6 +556,11 @@ def bot_loop(status_var, bet_var, log_box, spark_canvas, profit_var, stats_var):
         except Exception as e:
             logging.exception(f"Lỗi vòng lặp: {e}")
             set_status(status_var, f"⚠️ Lỗi: {e}", style="red")
+            # Gửi thông báo Telegram về lỗi
+            try:
+                telegram_notifier.send_error(str(e), "Vòng lặp bot chính")
+            except Exception as telegram_error:
+                logging.warning(f"Không thể gửi thông báo Telegram lỗi: {telegram_error}")
             time.sleep(1.0)
     set_status(status_var, "⏹ Bot đã dừng", style="red")
 
@@ -585,6 +589,14 @@ def start_bot(status_var, bet_var, log_box, spark_canvas, profit_var, stats_var)
     
     bot_running = True
     bot_paused = False
+    
+    # Gửi thông báo Telegram khi bot khởi động
+    try:
+        telegram_notifier.update_config(initial_bet=BET_LEVELS[0])
+        telegram_notifier.send_bot_started()
+    except Exception as e:
+        logging.warning(f"Không thể gửi thông báo Telegram khởi động: {e}")
+    
     thread_ref = threading.Thread(target=bot_loop, args=(status_var, bet_var, log_box, spark_canvas, profit_var, stats_var), daemon=True)
     thread_ref.start()
 
@@ -593,6 +605,13 @@ def stop_bot(status_var):
     bot_running = False
     bot_paused = False
     status_var.set("⏸ Đang dừng...")
+    
+    # Gửi thông báo Telegram khi bot dừng
+    try:
+        telegram_notifier.send_bot_stopped("Người dùng dừng")
+    except Exception as e:
+        logging.warning(f"Không thể gửi thông báo Telegram dừng: {e}")
+    
     # Đợi thread kết thúc an toàn
     if thread_ref is not None:
         try:
@@ -624,8 +643,6 @@ def save_config_to(path, status_var):
         "TELE_CLICK_POS": TELE_CLICK_POS,
         "DELAY_AFTER_BET": DELAY_AFTER_BET,
         "DELAY_AFTER_WIN_WAIT": DELAY_AFTER_WIN_WAIT,
-        "DRY_RUN": DRY_RUN,
-        "ENABLE_SOUND": ENABLE_SOUND,
         "TESS_CMD": pytesseract.pytesseract.tesseract_cmd,
         "BET_LEVELS": BET_LEVELS,
     }
@@ -650,7 +667,7 @@ def open_logs_folder():
 
 def load_config_from(path, widgets, status_var):
     global TELE_REGION, AMOUNT_REGION, BTN_LON_POS, BTN_NHO_POS, BET_BOX_POS, BTN_GUI_POS, TELE_CLICK_POS
-    global DELAY_AFTER_BET, DELAY_AFTER_WIN_WAIT, DRY_RUN, ENABLE_SOUND, BET_LEVELS
+    global DELAY_AFTER_BET, DELAY_AFTER_WIN_WAIT, BET_LEVELS
     try:
         with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -663,8 +680,6 @@ def load_config_from(path, widgets, status_var):
         TELE_CLICK_POS = tuple(data.get("TELE_CLICK_POS", TELE_CLICK_POS))
         DELAY_AFTER_BET = int(data.get("DELAY_AFTER_BET", DELAY_AFTER_BET))
         DELAY_AFTER_WIN_WAIT = int(data.get("DELAY_AFTER_WIN_WAIT", DELAY_AFTER_WIN_WAIT))
-        DRY_RUN = bool(data.get("DRY_RUN", DRY_RUN))
-        ENABLE_SOUND = bool(data.get("ENABLE_SOUND", ENABLE_SOUND))
         pytesseract.pytesseract.tesseract_cmd = data.get("TESS_CMD", pytesseract.pytesseract.tesseract_cmd)
         BET_LEVELS = list(data.get("BET_LEVELS", BET_LEVELS))
 
@@ -677,10 +692,33 @@ def load_config_from(path, widgets, status_var):
         widgets["entry_amount"].delete(0, tk.END); widgets["entry_amount"].insert(0, f"{AMOUNT_REGION[0]}, {AMOUNT_REGION[1]}, {AMOUNT_REGION[2]}, {AMOUNT_REGION[3]}")
         widgets["var_delay_bet"].delete(0, tk.END); widgets["var_delay_bet"].insert(0, str(DELAY_AFTER_BET))
         widgets["var_delay_win"].delete(0, tk.END); widgets["var_delay_win"].insert(0, str(DELAY_AFTER_WIN_WAIT))
-        widgets["var_dry"].set(1 if DRY_RUN else 0)
-        widgets["var_sound"].set(1 if ENABLE_SOUND else 0)
         widgets["entry_tess"].delete(0, tk.END); widgets["entry_tess"].insert(0, pytesseract.pytesseract.tesseract_cmd)
         widgets["entry_levels"].delete(0, tk.END); widgets["entry_levels"].insert(0, ",".join(map(str, BET_LEVELS)))
+        
+        # Load Telegram config if available
+        if "entry_token" in widgets:
+            widgets["entry_token"].delete(0, tk.END)
+            widgets["entry_token"].insert(0, telegram_notifier.config.get("bot_token", ""))
+        if "entry_chat" in widgets:
+            widgets["entry_chat"].delete(0, tk.END)
+            widgets["entry_chat"].insert(0, telegram_notifier.config.get("chat_id", ""))
+        if "var_telegram_enabled" in widgets:
+            widgets["var_telegram_enabled"].set(telegram_notifier.config.get("enabled", False))
+        if "var_notify_start" in widgets:
+            widgets["var_notify_start"].set(telegram_notifier.config.get("notify_on_start", True))
+        if "var_notify_stop" in widgets:
+            widgets["var_notify_stop"].set(telegram_notifier.config.get("notify_on_stop", True))
+        if "var_notify_win" in widgets:
+            widgets["var_notify_win"].set(telegram_notifier.config.get("notify_on_win", True))
+        if "var_notify_lose" in widgets:
+            widgets["var_notify_lose"].set(telegram_notifier.config.get("notify_on_lose", True))
+        if "var_notify_error" in widgets:
+            widgets["var_notify_error"].set(telegram_notifier.config.get("notify_on_error", True))
+        if "var_notify_balance" in widgets:
+            widgets["var_notify_balance"].set(telegram_notifier.config.get("notify_balance_updates", True))
+        if "var_notify_bet" in widgets:
+            widgets["var_notify_bet"].set(telegram_notifier.config.get("notify_bet_changes", True))
+        
         status_var.set(f"📥 Đã nạp cấu hình từ {os.path.basename(path)}")
     except Exception as e:
         status_var.set(f"⚠️ Lỗi nạp file: {e}")
@@ -703,7 +741,7 @@ def pick_position(focused_key, entries_map, status_var, root):
 
 def apply_updates(widgets, status_var, save=False, path=DEFAULT_CONFIG):
     global BTN_LON_POS, BTN_NHO_POS, BET_BOX_POS, BTN_GUI_POS, TELE_CLICK_POS
-    global DELAY_AFTER_BET, DELAY_AFTER_WIN_WAIT, DRY_RUN, ENABLE_SOUND, BET_LEVELS, AMOUNT_REGION
+    global DELAY_AFTER_BET, DELAY_AFTER_WIN_WAIT, BET_LEVELS, AMOUNT_REGION
     try:
         BTN_LON_POS = tuple(map(int, widgets["entry_lon"].get().split(',')))
         BTN_NHO_POS = tuple(map(int, widgets["entry_nho"].get().split(',')))
@@ -714,8 +752,6 @@ def apply_updates(widgets, status_var, save=False, path=DEFAULT_CONFIG):
         AMOUNT_REGION = tuple(map(int, widgets["entry_amount"].get().split(',')))
         DELAY_AFTER_BET = int(widgets["var_delay_bet"].get())
         DELAY_AFTER_WIN_WAIT = int(widgets["var_delay_win"].get())
-        DRY_RUN = bool(widgets["var_dry"].get())
-        ENABLE_SOUND = bool(widgets["var_sound"].get())
         pytesseract.pytesseract.tesseract_cmd = widgets["entry_tess"].get().strip()
         levels = [int(x.strip()) for x in widgets["entry_levels"].get().split(',') if x.strip()]
         if levels:
@@ -729,13 +765,81 @@ def apply_updates(widgets, status_var, save=False, path=DEFAULT_CONFIG):
     except Exception as e:
         status_var.set(f"⚠️ Lỗi: {e}")
 
+def save_telegram_config(widgets, status_var):
+    """Lưu cấu hình Telegram"""
+    try:
+        bot_token = widgets["entry_token"].get().strip()
+        chat_id = widgets["entry_chat"].get().strip()
+        enabled = bool(widgets["var_telegram_enabled"].get())
+        notify_start = bool(widgets["var_notify_start"].get())
+        notify_stop = bool(widgets["var_notify_stop"].get())
+        notify_win = bool(widgets["var_notify_win"].get())
+        notify_lose = bool(widgets["var_notify_lose"].get())
+        notify_error = bool(widgets["var_notify_error"].get())
+        notify_balance = bool(widgets["var_notify_balance"].get())
+        notify_bet = bool(widgets["var_notify_bet"].get())
+        
+        telegram_notifier.update_config(
+            bot_token=bot_token,
+            chat_id=chat_id,
+            enabled=enabled,
+            notify_on_start=notify_start,
+            notify_on_stop=notify_stop,
+            notify_on_win=notify_win,
+            notify_on_lose=notify_lose,
+            notify_on_error=notify_error,
+            notify_balance_updates=notify_balance,
+            notify_bet_changes=notify_bet
+        )
+        
+        status_var.set("✅ Đã lưu cấu hình Telegram!")
+        
+    except Exception as e:
+        status_var.set(f"⚠️ Lỗi lưu cấu hình Telegram: {e}")
+
+def test_telegram_connection(widgets, status_var):
+    """Test kết nối Telegram"""
+    try:
+        # Lưu cấu hình tạm thời để test
+        bot_token = widgets["entry_token"].get().strip()
+        chat_id = widgets["entry_chat"].get().strip()
+        
+        if not bot_token or not chat_id:
+            status_var.set("⚠️ Vui lòng nhập Bot Token và Chat ID!")
+            return
+        
+        # Cập nhật cấu hình tạm thời
+        telegram_notifier.update_config(
+            bot_token=bot_token,
+            chat_id=chat_id,
+            enabled=True
+        )
+        
+        status_var.set("🔄 Đang test kết nối Telegram...")
+        
+        # Test trong thread riêng để không chặn UI
+        def test_thread():
+            try:
+                success, message = telegram_notifier.test_connection()
+                if success:
+                    status_var.set("✅ Test Telegram thành công!")
+                else:
+                    status_var.set(f"❌ Test Telegram thất bại: {message}")
+            except Exception as e:
+                status_var.set(f"❌ Lỗi test Telegram: {e}")
+        
+        threading.Thread(target=test_thread, daemon=True).start()
+        
+    except Exception as e:
+        status_var.set(f"⚠️ Lỗi test Telegram: {e}")
+
 def main_gui():
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("dark-blue")
 
     root = ctk.CTk()
     root.title("Auto Bot Winluck v4_pro")
-    root.geometry("670x660")
+    root.geometry("670x760")
     root.resizable(False, False)
 
     try:
@@ -777,6 +881,29 @@ def main_gui():
     log_box = ctk.CTkTextbox(left, width=360, height=145, fg_color="#181a1b", text_color="#d3d7de", font=("Consolas", 11), corner_radius=6, border_width=1, border_color="#393e46")
     log_box.pack(pady=6, padx=12, fill='x')
 
+    # --- Widgets map ---
+    widgets = {}
+
+    # --- Section: Cấu hình nâng cao bên trái ---
+    section_advanced_left = ctk.CTkFrame(left, fg_color="#181a1b", corner_radius=6, border_width=1, border_color="#393e46")
+    section_advanced_left.pack(fill='x', padx=12, pady=(0,8))
+    
+    ctk.CTkLabel(section_advanced_left, text="🛠️ Cấu hình nâng cao", font=("Arial", 11, "bold"), text_color="#1aafff", fg_color="transparent").pack(anchor='w', pady=(6,4), padx=8)
+    
+    # Đường dẫn Tesseract
+    ctk.CTkLabel(section_advanced_left, text="Đường dẫn Tesseract:", font=("Arial", 10), text_color="#d3d7de", fg_color="transparent").pack(anchor='w', pady=(2,1), padx=8)
+    entry_tess = ctk.CTkEntry(section_advanced_left, width=340, font=("Arial",10), fg_color="#181a1b", text_color="#d3d7de", border_color="#1aafff", border_width=1)
+    entry_tess.insert(0, pytesseract.pytesseract.tesseract_cmd or DEFAULT_TESS)
+    entry_tess.pack(anchor='w', padx=8, pady=(0,4))
+    widgets["entry_tess"] = entry_tess
+    
+    # Dãy hệ số cược
+    ctk.CTkLabel(section_advanced_left, text="Dãy hệ số cược (phân cách phẩy):", font=("Arial", 10), text_color="#d3d7de", fg_color="transparent").pack(anchor='w', pady=(2,1), padx=8)
+    entry_levels = ctk.CTkEntry(section_advanced_left, width=340, font=("Arial",10), fg_color="#181a1b", text_color="#d3d7de", border_color="#1aafff", border_width=1)
+    entry_levels.insert(0, ",".join(map(str, BET_LEVELS)))
+    entry_levels.pack(anchor='w', padx=8, pady=(0,6))
+    widgets["entry_levels"] = entry_levels
+
     # --- Controls dưới nhật ký ---
     ctrl = ctk.CTkFrame(left, fg_color="transparent")
     ctrl.pack(pady=10, padx=12, anchor='w')
@@ -793,9 +920,6 @@ def main_gui():
         command=lambda: open_logs_folder())
     btn_save = ctk.CTkButton(ctrl, text="💾 Lưu config", width=BTN_WIDTH, font=("Arial", 12),
         command=lambda: (apply_updates(widgets, status_var, save=True, path=DEFAULT_CONFIG)))
-
-    # --- Widgets map ---
-    widgets = {}
 
     # --- Right column ---
     focused_entry = ctk.StringVar(value="")
@@ -914,26 +1038,69 @@ def main_gui():
     entry_win.pack(side="left", padx=(8,0))
     widgets["var_delay_win"] = entry_win
 
-    # Section: tuỳ chọn nâng cao
-    section_misc = ctk.CTkFrame(right, fg_color="#232323", corner_radius=10, border_width=2, border_color="#1aafff")
-    section_misc.pack(fill='x', padx=10, pady=(0,6))
-    ctk.CTkLabel(section_misc, text="🛠️ Tùy chọn nâng cao", font=("Arial", 12, "bold"), text_color="#1aafff", fg_color="transparent").pack(anchor='w', pady=(0,8), padx=12)
-    var_dry = ctk.BooleanVar(value=DRY_RUN)
-    var_sound = ctk.BooleanVar(value=ENABLE_SOUND)
-    ctk.CTkCheckBox(section_misc, text="DRY_RUN (không click thật)", variable=var_dry, font=("Arial",12), text_color="#d3d7de").pack(anchor='w', pady=(0,3), padx=12)
-    ctk.CTkCheckBox(section_misc, text="Âm thanh thắng/thua (Windows)", variable=var_sound, font=("Arial",12), text_color="#d3d7de").pack(anchor='w', pady=(0,6), padx=12)
-    ctk.CTkLabel(section_misc, text="Đường dẫn Tesseract:", font=("Arial", 12), text_color="#d3d7de", fg_color="transparent").pack(anchor='w', pady=(2,2), padx=12)
-    entry_tess = ctk.CTkEntry(section_misc, width=380, font=("Arial",12), fg_color="#181a1b", text_color="#d3d7de", border_color="#1aafff", border_width=2)
-    entry_tess.insert(0, pytesseract.pytesseract.tesseract_cmd or DEFAULT_TESS)
-    entry_tess.pack(anchor='w', padx=12)
-    widgets["entry_tess"] = entry_tess
-    ctk.CTkLabel(section_misc, text="Dãy hệ số cược (phân cách phẩy):", font=("Arial", 12), text_color="#d3d7de", fg_color="transparent").pack(anchor='w', pady=(2,2), padx=12)
-    entry_levels = ctk.CTkEntry(section_misc, width=380, font=("Arial",12), fg_color="#181a1b", text_color="#d3d7de", border_color="#1aafff", border_width=2)
-    entry_levels.insert(0, ",".join(map(str, BET_LEVELS)))
-    entry_levels.pack(anchor='w', padx=12, pady=(0,8))
-    widgets["entry_levels"] = entry_levels
-    widgets["var_dry"] = var_dry
-    widgets["var_sound"] = var_sound
+    # Section: Telegram Notifications
+    section_telegram = ctk.CTkFrame(right, fg_color="#232323", corner_radius=10, border_width=2, border_color="#1aafff")
+    section_telegram.pack(fill='x', padx=10, pady=(0,6))
+    ctk.CTkLabel(section_telegram, text="📱 Thông báo Telegram", font=("Arial", 12, "bold"), text_color="#1aafff", fg_color="transparent").pack(anchor='w', pady=(0,8), padx=12)
+    
+    # Telegram Bot Token
+    row_token = ctk.CTkFrame(section_telegram, fg_color="transparent")
+    row_token.pack(fill='x', padx=12, pady=(0,4))
+    ctk.CTkLabel(row_token, text="Bot Token:", width=100, anchor="w", font=("Arial", 12), text_color="#d3d7de", fg_color="transparent").pack(side="left")
+    entry_token = ctk.CTkEntry(row_token, width=280, font=("Arial",12), fg_color="#181a1b", text_color="#d3d7de", border_color="#1aafff", border_width=2, show="*")
+    entry_token.insert(0, telegram_notifier.config.get("bot_token", ""))
+    entry_token.pack(side="left", padx=(8,0))
+    widgets["entry_token"] = entry_token
+    
+    # Telegram Chat ID
+    row_chat = ctk.CTkFrame(section_telegram, fg_color="transparent")
+    row_chat.pack(fill='x', padx=12, pady=(0,4))
+    ctk.CTkLabel(row_chat, text="Chat ID:", width=100, anchor="w", font=("Arial", 12), text_color="#d3d7de", fg_color="transparent").pack(side="left")
+    entry_chat = ctk.CTkEntry(row_chat, width=280, font=("Arial",12), fg_color="#181a1b", text_color="#d3d7de", border_color="#1aafff", border_width=2)
+    entry_chat.insert(0, telegram_notifier.config.get("chat_id", ""))
+    entry_chat.pack(side="left", padx=(8,0))
+    widgets["entry_chat"] = entry_chat
+    
+    # Telegram Enable/Disable
+    var_telegram_enabled = ctk.BooleanVar(value=telegram_notifier.config.get("enabled", False))
+    ctk.CTkCheckBox(section_telegram, text="Bật thông báo Telegram", variable=var_telegram_enabled, font=("Arial",12), text_color="#d3d7de").pack(anchor='w', pady=(0,4), padx=12)
+    widgets["var_telegram_enabled"] = var_telegram_enabled
+    
+    # Telegram notification options
+    var_notify_start = ctk.BooleanVar(value=telegram_notifier.config.get("notify_on_start", True))
+    var_notify_stop = ctk.BooleanVar(value=telegram_notifier.config.get("notify_on_stop", True))
+    var_notify_win = ctk.BooleanVar(value=telegram_notifier.config.get("notify_on_win", True))
+    var_notify_lose = ctk.BooleanVar(value=telegram_notifier.config.get("notify_on_lose", True))
+    var_notify_error = ctk.BooleanVar(value=telegram_notifier.config.get("notify_on_error", True))
+    var_notify_balance = ctk.BooleanVar(value=telegram_notifier.config.get("notify_balance_updates", True))
+    var_notify_bet = ctk.BooleanVar(value=telegram_notifier.config.get("notify_bet_changes", True))
+    
+    ctk.CTkCheckBox(section_telegram, text="Thông báo khởi động/dừng bot", variable=var_notify_start, font=("Arial",11), text_color="#d3d7de").pack(anchor='w', pady=(0,2), padx=12)
+    ctk.CTkCheckBox(section_telegram, text="Thông báo kết quả thắng/thua", variable=var_notify_win, font=("Arial",11), text_color="#d3d7de").pack(anchor='w', pady=(0,2), padx=12)
+    ctk.CTkCheckBox(section_telegram, text="Thông báo thay đổi hệ số", variable=var_notify_bet, font=("Arial",11), text_color="#d3d7de").pack(anchor='w', pady=(0,2), padx=12)
+    ctk.CTkCheckBox(section_telegram, text="Thông báo cập nhật số dư", variable=var_notify_balance, font=("Arial",11), text_color="#d3d7de").pack(anchor='w', pady=(0,2), padx=12)
+    ctk.CTkCheckBox(section_telegram, text="Thông báo lỗi", variable=var_notify_error, font=("Arial",11), text_color="#d3d7de").pack(anchor='w', pady=(0,4), padx=12)
+    
+    widgets["var_notify_start"] = var_notify_start
+    widgets["var_notify_stop"] = var_notify_stop
+    widgets["var_notify_win"] = var_notify_win
+    widgets["var_notify_lose"] = var_notify_lose
+    widgets["var_notify_error"] = var_notify_error
+    widgets["var_notify_balance"] = var_notify_balance
+    widgets["var_notify_bet"] = var_notify_bet
+    
+    # Telegram buttons
+    telegram_btn_frame = ctk.CTkFrame(section_telegram, fg_color="transparent")
+    telegram_btn_frame.pack(pady=4)
+    
+    btn_test_telegram = ctk.CTkButton(telegram_btn_frame, text="🧪 Test Telegram", width=120, font=("Arial", 12), fg_color="#0066cc",
+        command=lambda: test_telegram_connection(widgets, status_var))
+    btn_test_telegram.pack(side="left", padx=5)
+    
+    btn_save_telegram = ctk.CTkButton(telegram_btn_frame, text="💾 Lưu Telegram", width=120, font=("Arial", 12), fg_color="#0066cc",
+        command=lambda: save_telegram_config(widgets, status_var))
+    btn_save_telegram.pack(side="left", padx=5)
+
 
     # --- Bố trí nút control ---
     for i, btn in enumerate([btn_start, btn_pause, btn_resume]):

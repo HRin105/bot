@@ -38,6 +38,11 @@
     "TESS_CMD": "C:\\Program Files\\Tesseract-OCR\\tesseract.exe",
     "BET_LEVELS": [
         1000,
-        2000
+        2000,
+        4000,
+        8000,
+        17000,
+        34000,
+        68000
     ]
 }

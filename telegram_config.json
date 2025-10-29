@@ -1,0 +1,13 @@
+{
+    "bot_token": "YOUR_BOT_TOKEN_HERE",
+    "chat_id": "YOUR_CHAT_ID_HERE",
+    "enabled": false,
+    "notify_on_start": true,
+    "notify_on_stop": true,
+    "notify_on_win": true,
+    "notify_on_lose": true,
+    "notify_on_error": true,
+    "notify_balance_updates": true,
+    "notify_bet_changes": true,
+    "initial_bet": 1000
+}
